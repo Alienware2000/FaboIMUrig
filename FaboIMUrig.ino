@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include "Quat.h"
 
 #include <Adafruit_LSM6DSL.h>               // Feather Sense built-in IMU
 #include "Adafruit_MPR121.h"                // Touch
@@ -28,55 +29,10 @@ Adafruit_LSM6DSL lsm6;
 Adafruit_MPR121  cap1, cap2;
 BNO080           bno0, bno1; // SparkFun driver supports multi-instances
 
-struct Quat { 
-  float i, j, k, r;
-  Quat() : i(0), j(0), k(0), r(1) {}
-  Quat(float ii, float jj, float kk, float rr) : i(ii), j(jj), k(kk), r(rr) {}
- };
 
 Quat q0, q1; // default = (0,0,0,1)
 Quat q0_ref(0,0,0,1), q1_ref(0,0,0,1); 
 bool haveRef0=false, haveRef1=false;
-
-// Convert a quaternion (i,j,k,w) to Euler (deg) for readability
-static void quatToEuler(float qi, float qj, float qk, float qr,
-                        float &roll, float &pitch, float &yaw) {
-  // roll (x-axis rotation)
-  float sinr_cosp = 2.0f * (qr * qi + qj * qk);
-  float cosr_cosp = 1.0f - 2.0f * (qi * qi + qj * qj);
-  roll = atan2f(sinr_cosp, cosr_cosp) * 180.0f / PI;
-
-  // pitch (y-axis rotation)
-  float sinp = 2.0f * (qr * qj - qk * qi);
-  if (fabsf(sinp) >= 1.0f)
-    pitch = copysignf(90.0f, sinp); // clamp
-  else
-    pitch = asinf(sinp) * 180.0f / PI;
-
-  // yaw (z-axis rotation)
-  float siny_cosp = 2.0f * (qr * qk + qi * qj);
-  float cosy_cosp = 1.0f - 2.0f * (qj * qj + qk * qk);
-  yaw = atan2f(siny_cosp, cosy_cosp) * 180.0f / PI;
-}
-
-static Quat qConj(const Quat& q){ return Quat(-q.i, -q.j, -q.k, q.r); }
-static Quat qMul(const Quat& a, const Quat& b) {
-  return Quat(
-    a.r*b.i + a.i*b.r + a.j*b.k - a.k*b.j,
-    a.r*b.j - a.i*b.k + a.j*b.r + a.k*b.i,
-    a.r*b.k + a.i*b.j - a.j*b.i + a.k*b.r,
-    a.r*b.r - a.i*b.i - a.j*b.j - a.k*b.k
-  );
-}
-
-static void qNormalize(Quat &q) {
-  float n = sqrtf(q.i*q.i + q.j*q.j + q.k*q.k + q.r*q.r);
-  if (n > 0) { q.i/=n; q.j/=n; q.k/=n; q.r/=n; }
-}
-
-static float qDot(const Quat& a, const Quat& b) {
-  return a.i*b.i + a.j*b.j + a.k*b.k + a.r*b.r;
-}
 
 // Average current q0/q1 over a short window; stores into q0_ref/q1_ref
 static void captureZeroAveraged(uint16_t samples=300, uint16_t msBetween=5) {
@@ -103,11 +59,6 @@ static void captureZeroAveraged(uint16_t samples=300, uint16_t msBetween=5) {
   qNormalize(acc0); qNormalize(acc1);
   q0_ref = acc0; q1_ref = acc1;
   haveRef0 = haveRef1 = true;
-}
-
-static float qAngleFromIdentityDeg(const Quat& q) {
-  float w = fmaxf(-1.0f, fminf(1.0f, q.r)); // clamp
-  return 2.0f * acosf(w) * 180.0f / PI;
 }
 
 float gxb=0, gyb=0, gzb=0; // gyro bias
