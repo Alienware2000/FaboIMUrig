@@ -1,0 +1,15 @@
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Arduino / build artifacts
+build/
+.pio/
+*.csv
+*.log
+
+# Python venvs if you add scripts later
+.venv/
+venv/
