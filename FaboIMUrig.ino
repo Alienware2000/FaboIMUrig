@@ -38,15 +38,15 @@ const uint8_t BNO_CH3 = 3;
 
 // How many IMUs today? 
 // Scale-out: choose how many BNOs you mounted
-constexpr uint8_t NUM_NODES = 4;
+constexpr uint8_t NUM_NODES = 2;
 
 // Drivers (SparkFun) + nodes (our wrapper/state)
 BNO080   bnoDrv[NUM_NODES];
 BnoNode  node[NUM_NODES] = {
   BnoNode(&bnoDrv[0], BNO_CH0, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // chest?
   BnoNode(&bnoDrv[1], BNO_CH1, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // upper arm?
-  BnoNode(&bnoDrv[2], BNO_CH2, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // forearm?
-  BnoNode(&bnoDrv[3], BNO_CH3, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // spare
+  // BnoNode(&bnoDrv[2], BNO_CH2, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // forearm?
+  // BnoNode(&bnoDrv[3], BNO_CH3, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // spare
 };
 
 // ---------- LSM6 gyro bias ----------
@@ -71,15 +71,15 @@ static void calibrateGyroBias() {
 
 // example for 2 nodes; extend by pattern
 static void printHeader() {
-  Serial.println(
-    "t_ms,"
-    "ax,ay,az,gx,gy,gz,"
-    "bno0_qr,qi,qj,qk,"
-    "bno1_qr,qi,qj,qk,"
-    // "bno2_qr,qi,qj,qk,"
-    // "bno3_qr,qi,qj,qk,"
-    "touchA,touchB"
-  );
+  // Serial.println(
+  //   "t_ms,"
+  //   "ax,ay,az,gx,gy,gz,"
+  //   "bno0_qr,qi,qj,qk,"
+  //   "bno1_qr,qi,qj,qk,"
+  //   // "bno2_qr,qi,qj,qk,"
+  //   // "bno3_qr,qi,qj,qk,"
+  //   "touchA,touchB"
+  // );
 
   // Serial.println(
   // "t_ms,ax,ay,az,gx,gy,gz,"
@@ -88,6 +88,58 @@ static void printHeader() {
   // "touchA,touchB"
   // );
 
+  Serial.println(
+    "t_ms,"
+    "ax,ay,az,gx,gy,gz,"
+    "n0_world_w,n0_world_i,n0_world_j,n0_world_k,"
+    "n0_body_w,n0_body_i,n0_body_j,n0_body_k,n0_yaw_deg,"
+    "n1_world_w,n1_world_i,n1_world_j,n1_world_k,"
+    "n1_body_w,n1_body_i,n1_body_j,n1_body_k,n1_yaw_deg,"
+    "touchA,touchB"
+  );
+
+}
+
+// Minimal I2C scanner with TCA channels
+void scanI2C() {
+  Serial.println("\n--- Base bus scan (no TCA channel selected) ---");
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("  found 0x"); Serial.println(addr, HEX);
+    }
+  }
+
+  // Known TCA address(es) to try:
+  const uint8_t tcaCandidates[] = {0x70, 0x71, 0x72, 0x73};
+  for (uint8_t ti=0; ti<sizeof(tcaCandidates); ++ti) {
+    uint8_t tca = tcaCandidates[ti];
+    Serial.print("\nTrying TCA at 0x"); Serial.println(tca, HEX);
+
+    // Ping TCA itself
+    Wire.beginTransmission(tca);
+    int ping = Wire.endTransmission();
+    if (ping != 0) { Serial.println("  not present"); continue; }
+
+    for (uint8_t ch=0; ch<8; ++ch) {
+      // select channel
+      Wire.beginTransmission(tca);
+      Wire.write(1 << ch);
+      Wire.endTransmission();
+      delay(3);
+
+      Serial.print("  CH"); Serial.print(ch); Serial.println(" scan:");
+      bool any=false;
+      for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+          Serial.print("    found 0x"); Serial.println(addr, HEX);
+          any=true;
+        }
+      }
+      if (!any) Serial.println("    (no devices)");
+    }
+  }
 }
 
 void setup() {
@@ -97,6 +149,9 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000);
   delay(50);
+  // scanI2C();
+  // while(true) { delay(1000); } // stop here for now
+
 
   // LSM6
   if (!lsm6.begin_I2C(LSM6_ADDR, &Wire)) {
@@ -134,7 +189,7 @@ static void setAllFusion(FusionMode m){
 void loop() {
   static uint32_t next_ms = 0;
   uint32_t now = millis();
-  if ((int32_t)(now - next_ms) < 0) return;
+  if ((int32_t)(now - next_ms) < 0) return; // now < next_ms
   next_ms = now + 20;   // ~50 Hz output cadence
 
   // --- poll BNOs ---
@@ -162,6 +217,7 @@ void loop() {
         node[i].yawOffsetDeg  = yawDeg(node[i].q_ref) - yawRef; // choose node 0 as reference (chest)
         node[i].haveYawOffset = true;
       }
+    }
 
     if (c == 'g') { setAllFusion(FusionMode::GameRV);  Serial.println("Mode: GameRV"); }
     if (c == 'r') { setAllFusion(FusionMode::RotationRV); Serial.println("Mode: RotationRV"); }
@@ -221,18 +277,17 @@ void loop() {
 
   // --- CSV frame (stable schema; expand later to q2/q3 if you want) ---
   Serial.print(now); Serial.print(',');
-
   Serial.print(ax,3); Serial.print(','); Serial.print(ay,3); Serial.print(','); Serial.print(az,3); Serial.print(',');
   Serial.print(gx,3); Serial.print(','); Serial.print(gy,3); Serial.print(','); Serial.print(gz,3); Serial.print(',');
 
-  // bno0 world and rel+heading (yaw shown for sanity)
+  // n0 world, body, yaw
   Serial.print(n0.q_world.r,4); Serial.print(','); Serial.print(n0.q_world.i,4); Serial.print(',');
   Serial.print(n0.q_world.j,4); Serial.print(','); Serial.print(n0.q_world.k,4); Serial.print(',');
   Serial.print(q0_body.r,4);    Serial.print(','); Serial.print(q0_body.i,4);    Serial.print(',');
   Serial.print(q0_body.j,4);    Serial.print(','); Serial.print(q0_body.k,4);    Serial.print(',');
   Serial.print(yawDeg(q0_body),2); Serial.print(',');
 
-  // bno1 world and rel+heading
+  // n1 world, body, yaw
   Serial.print(n1.q_world.r,4); Serial.print(','); Serial.print(n1.q_world.i,4); Serial.print(',');
   Serial.print(n1.q_world.j,4); Serial.print(','); Serial.print(n1.q_world.k,4); Serial.print(',');
   Serial.print(q1_body.r,4);    Serial.print(','); Serial.print(q1_body.i,4);    Serial.print(',');
@@ -263,5 +318,5 @@ void loop() {
   // Serial.print(cap1.touched()); Serial.print(',');
   // Serial.println(cap2.touched());
 
-  }
 }
+
