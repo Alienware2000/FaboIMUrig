@@ -65,5 +65,13 @@ float qAngleFromIdentityDeg(const Quat& q);
     yaw   = rotation about Z
   Beware of gimbal lock around pitch = ±90 degrees.
 */
-void  quatToEuler(float qi, float qj, float qk, float qr,
-                  float &roll, float &pitch, float &yaw);
+
+// ---- Display / helpers ----
+void  quatToEuler(const Quat& q, float &roll, float &pitch, float &yawDeg);
+float yawDeg(const Quat& q);               // heading about world +Z
+Quat  quatFromYawDeg(float yawDeg);        // pure Z-rotation (+Z up)
+float qAngleFromIdentityDeg(const Quat& q);// angle between q and identity
+
+// ---- Vector rotate (optional, handy later for features) ----
+struct Vec3 { float x,y,z; };
+Vec3  rotateVecByQuat(const Vec3& v, const Quat& q);

@@ -1,100 +1,93 @@
-// ====== Faboratory IMU Rig — Baseline v0.3 ======
-// Features: LSM6 gyro bias, BNO zero-pose (averaged), two BNOs via TCA, touch read
-// What’s intentionally NOT included yet: smoothing, heading mode switch, yaw alignment, mount alignment
+// ====== Faboratory IMU Rig — Baseline v0.4 (refactor) ======
+// Features now: LSM6 gyro bias, per-node zero (averaged), fusion mode switch,
+// heading alignment offset capture (for GameRV), mount placeholders, CSV print.
 
-// Feather nRF52840 Sense + TCA9548A + 2x BNO085 (SparkFun lib) + 2x MPR121
-// Prints one CSV frame per loop: t_ms, ax,ay,az, gx,gy,gz, q0(i,j,k,w), q1(i,j,k,w), touchA, touchB
+// Cal pipeline in this build:
+// - LSM6 gyro bias
+// - per-node zero (averaged)
+// - fusion mode switch (g/r)
+// - heading offsets captured at zero (for GameRV drift-consistency)
+// - mount alignment placeholder (identity) inside each node
+// Output: CSV with raw LSM6 + q_world/q_rel/yaw per first two nodes (expand easily)
 
 #include <Arduino.h>
 #include <Wire.h>
+
 #include "Quat.h"
+#include "BnoNode.h"
 
-#include <Adafruit_LSM6DSL.h>               // Feather Sense built-in IMU
-#include "Adafruit_MPR121.h"                // Touch
-#include <SparkFun_BNO080_Arduino_Library.h>// SparkFun BNO080/BNO085 lib
+#include <Adafruit_LSM6DSL.h>
+#include "Adafruit_MPR121.h"
 
-// ---------- I2C addresses ----------
+// ---------- addresses ----------
 #define TCA_ADDR   0x70
 #define LSM6_ADDR  0x6A
-#define BNO_ADDR   0x4A   // Adafruit BNO085 (ADR low)
+#define BNO_ADDR   0x4A        // ADR low (Adafruit BNO085)
 #define MPR1_ADDR  0x5A
 #define MPR2_ADDR  0x5B
 
-// ---------- TCA channels ----------
-const uint8_t BNO_CH0 = 0;   // BNO #0 on CH0 (SD0/SC0)
-const uint8_t BNO_CH1 = 1;   // BNO #1 on CH1 (SD1/SC1)
-
-// ---------- Devices ----------
+// ---------- devices ----------
 Adafruit_LSM6DSL lsm6;
 Adafruit_MPR121  cap1, cap2;
-BNO080           bno0, bno1; // SparkFun driver supports multi-instances
 
+// ---------- TCA channels ----------
+const uint8_t BNO_CH0 = 0;
+const uint8_t BNO_CH1 = 1;
+const uint8_t BNO_CH2 = 2;
+const uint8_t BNO_CH3 = 3;
 
-Quat q0, q1; // default = (0,0,0,1)
-Quat q0_ref(0,0,0,1), q1_ref(0,0,0,1); 
-bool haveRef0=false, haveRef1=false;
+// How many IMUs today? 
+// Scale-out: choose how many BNOs you mounted
+constexpr uint8_t NUM_NODES = 4;
 
-// Average current q0/q1 over a short window; stores into q0_ref/q1_ref
-static void captureZeroAveraged(uint16_t samples=300, uint16_t msBetween=5) {
-  Quat acc0(0,0,0,0), acc1(0,0,0,0);
-  Quat first0 = q0, first1 = q1;
+// Drivers (SparkFun) + nodes (our wrapper/state)
+BNO080   bnoDrv[NUM_NODES];
+BnoNode  node[NUM_NODES] = {
+  BnoNode(&bnoDrv[0], BNO_CH0, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // chest?
+  BnoNode(&bnoDrv[1], BNO_CH1, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // upper arm?
+  BnoNode(&bnoDrv[2], BNO_CH2, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // forearm?
+  BnoNode(&bnoDrv[3], BNO_CH3, TCA_ADDR, BNO_ADDR, FusionMode::GameRV), // spare
+};
 
-  for (uint16_t n=0; n<samples; ++n) {
-    // Re-use most recent q0/q1 (your loop updates them continuously)
-    Quat s0 = q0, s1 = q1;
+// ---------- LSM6 gyro bias ----------
+float gxb=0, gyb=0, gzb=0;
 
-    // Keep samples on same hemisphere as the first (avoid cancellation)
-    if (qDot(s0, first0) < 0) { s0.i=-s0.i; s0.j=-s0.j; s0.k=-s0.k; s0.r=-s0.r; }
-    if (qDot(s1, first1) < 0) { s1.i=-s1.i; s1.j=-s1.j; s1.k=-s1.k; s1.r=-s1.r; }
-
-    // Accumulate
-    acc0.i += s0.i; acc0.j += s0.j; acc0.k += s0.k; acc0.r += s0.r;
-    acc1.i += s1.i; acc1.j += s1.j; acc1.k += s1.k; acc1.r += s1.r;
-
-    delay(msBetween);
-
-  }
-
-  // Normalize to get the mean orientation
-  qNormalize(acc0); qNormalize(acc1);
-  q0_ref = acc0; q1_ref = acc1;
-  haveRef0 = haveRef1 = true;
-}
-
-float gxb=0, gyb=0, gzb=0; // gyro bias
-
-void calibrateGyroBias() {
+static void calibrateGyroBias() {
   sensors_event_t a,g,t;
   const int N = 300;
   gxb = gyb = gzb = 0;
-  for (int i=0; i<N; i++) {
+  for (int i=0; i<N; ++i) {
     lsm6.getEvent(&a,&g,&t);
     gxb += g.gyro.x; gyb += g.gyro.y; gzb += g.gyro.z;
     delay(5);
   }
   gxb/=N; gyb/=N; gzb/=N;
+
   Serial.print("LSM6 gyro bias: ");
   Serial.print(gxb,5); Serial.print(", ");
   Serial.print(gyb,5); Serial.print(", ");
   Serial.println(gzb,5);
 }
 
-static void tcaSelect(uint8_t ch) {
-  Wire.beginTransmission(TCA_ADDR);
-  Wire.write(1 << ch);   // one-hot select
-  Wire.endTransmission();
-}
-
-static bool beginBNO(BNO080& dev, uint8_t ch) {
-  tcaSelect(ch);
-  delay(120);                          // settle after mux switch
-  if (!dev.begin(BNO_ADDR, Wire)) return false;
-  dev.enableRotationVector(10);        // 10 ms -> ~100 Hz
-  return true;
-}
-
+// example for 2 nodes; extend by pattern
 static void printHeader() {
-  Serial.println("t_ms,ax,ay,az,gx,gy,gz,q0i,q0j,q0k,q0w,q1i,q1j,q1k,q1w,touchA,touchB");
+  Serial.println(
+    "t_ms,"
+    "ax,ay,az,gx,gy,gz,"
+    "bno0_qr,qi,qj,qk,"
+    "bno1_qr,qi,qj,qk,"
+    // "bno2_qr,qi,qj,qk,"
+    // "bno3_qr,qi,qj,qk,"
+    "touchA,touchB"
+  );
+
+  // Serial.println(
+  // "t_ms,ax,ay,az,gx,gy,gz,"
+  // "n0_w,n0_i,n0_j,n0_k,n0_yaw,"
+  // "n1_w,n1_i,n1_j,n1_k,n1_yaw,"
+  // "touchA,touchB"
+  // );
+
 }
 
 void setup() {
@@ -102,13 +95,12 @@ void setup() {
   while (!Serial) {}
 
   Wire.begin();
-  Wire.setClock(100000);               // use 400k later when stable
+  Wire.setClock(100000);
   delay(50);
 
-  // Built-in IMU
+  // LSM6
   if (!lsm6.begin_I2C(LSM6_ADDR, &Wire)) {
-    Serial.println("ERR: LSM6DSL not found at 0x6A");
-    while (1) delay(10);
+    Serial.println("ERR: LSM6DSL not found at 0x6A"); while (1) delay(10);
   }
   lsm6.setAccelRange(LSM6DS_ACCEL_RANGE_4_G);
   lsm6.setGyroRange(LSM6DS_GYRO_RANGE_500_DPS);
@@ -118,122 +110,158 @@ void setup() {
   Serial.println("Hold still ~2s for gyro bias...");
   calibrateGyroBias();
 
-  // Two BNOs via TCA (SparkFun lib)
-  if (!beginBNO(bno0, BNO_CH0)) { Serial.println("ERR: BNO080 #0 init failed"); while (1) delay(10); }
-  if (!beginBNO(bno1, BNO_CH1)) { Serial.println("ERR: BNO080 #1 init failed"); while (1) delay(10); }
+  // BNO nodes
+  for (uint8_t i=0; i<NUM_NODES; ++i) {
+    if (!node[i].begin(TCA_ADDR, BNO_ADDR, /*rate_ms=*/10)) {
+      Serial.print("ERR: BNO080 #"); Serial.print(i); Serial.println(" init failed");
+      while (1) delay(10);
+    }
+  }
 
   // Touch
-  if (!cap1.begin(MPR1_ADDR)) { Serial.println("ERR: MPR121 #1 not found"); while (1) delay(10); }
-  if (!cap2.begin(MPR2_ADDR)) { Serial.println("ERR: MPR121 #2 not found"); while (1) delay(10); }
-  // cap1.setThresholds(8,4); cap2.setThresholds(8,4); // optional tuning
+  if (!cap1.begin(MPR1_ADDR)) { Serial.println("ERR: MPR121 #1 not found"); while(1) delay(10); }
+  if (!cap2.begin(MPR2_ADDR)) { Serial.println("ERR: MPR121 #2 not found"); while(1) delay(10); }
 
   printHeader();
+
+}
+
+// Helper to set all nodes’ fusion
+static void setAllFusion(FusionMode m){
+  for (uint8_t i=0; i<NUM_NODES; ++i) node[i].setFusion(m, 10);
 }
 
 void loop() {
   static uint32_t next_ms = 0;
   uint32_t now = millis();
   if ((int32_t)(now - next_ms) < 0) return;
-  next_ms = now + 20;                  // ~50 Hz output cadence
+  next_ms = now + 20;   // ~50 Hz output cadence
 
-  // Built-in IMU (raw accel/gyro)
+  // --- poll BNOs ---
+  for (uint8_t i=0; i<NUM_NODES; ++i) node[i].poll();
+
+  // --- built-in IMU ---
   sensors_event_t a, g, t;
   lsm6.getEvent(&a, &g, &t);
   float ax=a.acceleration.x, ay=a.acceleration.y, az=a.acceleration.z;
-  float gx=(g.gyro.x - gxb),         gy=(g.gyro.y - gyb),         gz=(g.gyro.z - gzb);
+  float gx=(g.gyro.x - gxb), gy=(g.gyro.y - gyb), gz=(g.gyro.z - gzb);
 
-  // BNO #0 quaternion
-  tcaSelect(BNO_CH0);
-  // tiny settle can help with some mux boards
-  // delayMicroseconds(200);
-  if (bno0.dataAvailable()) {
-    // SparkFun driver updates internal fields automatically when dataAvailable() is true
-    q0.i = bno0.getQuatI();
-    q0.j = bno0.getQuatJ();
-    q0.k = bno0.getQuatK();
-    q0.r = bno0.getQuatReal();
-  }
-
-  // BNO #1 quaternion
-  tcaSelect(BNO_CH1);
-  // delayMicroseconds(200);
-  if (bno1.dataAvailable()) {
-    q1.i = bno1.getQuatI();
-    q1.j = bno1.getQuatJ();
-    q1.k = bno1.getQuatK();
-    q1.r = bno1.getQuatReal();
-  }
-
+  // --- keyboard control ---
   while (Serial.available()) {
     char c = Serial.read();
+
     if (c == 'z') {
       Serial.println("Zeroing... hold the pose ~0.5s");
-      captureZeroAveraged(100, 5);
-      Serial.println("Zero pose captured for (averaged)");
-    }
-    if (c == 'g') {
-      tcaSelect(BNO_CH0); bno0.enableGameRotationVector(10);
-      tcaSelect(BNO_CH1); bno1.enableGameRotationVector(10);
-      Serial.println("Mode: Game Rotation Vector (gyro+accel, no magnetometer)");
-    }
-    if (c == 'r') {
-      tcaSelect(BNO_CH0); bno0.enableRotationVector(10);
-      tcaSelect(BNO_CH1); bno1.enableRotationVector(10);
-      Serial.println("Mode: Rotation Vector (uses magnetometer for absolute yaw)");
-    }
+      for (uint8_t i=0; i<NUM_NODES; ++i) node[i].captureZero(100, 5);
+      Serial.println("Zero pose captured (averaged) for all nodes");
 
+      // Heading offsets (only needed for GameRV consistency)
+      // assume node[0] is chest
+      float yawRef = yawDeg(node[0].q_ref);
+      for (uint8_t i=0; i<NUM_NODES; ++i) {
+        node[i].yawOffsetDeg  = yawDeg(node[i].q_ref) - yawRef; // choose node 0 as reference (chest)
+        node[i].haveYawOffset = true;
+      }
+
+    if (c == 'g') { setAllFusion(FusionMode::GameRV);  Serial.println("Mode: GameRV"); }
+    if (c == 'r') { setAllFusion(FusionMode::RotationRV); Serial.println("Mode: RotationRV"); }
   }
 
-  // Touch bitmasks
+  // --- build derived states ---
+
+  // Example: use the first two nodes in the CSV for now
+  BnoNode& n0 = node[0];
+  BnoNode& n1 = node[1];
+
+  // Optional all encompassing step 
+  Quat q0_body = n0.qBody();
+  Quat q1_body = n1.qBody();
+
+  // Relative since zero
+  // Quat q0_rel = n0.qRel();
+  // Quat q1_rel = n1.qRel();
+
+  // // Apply heading alignment for GameRV (subtract constant yaw about world +Z)
+  // if (n0.haveYawOffset && n0.mode == FusionMode::GameRV)
+  //   q0_rel = qMul(quatFromYawDeg(-n0.yawOffsetDeg), q0_rel);
+  // if (n1.haveYawOffset && n1.mode == FusionMode::GameRV)
+  //   q1_rel = qMul(quatFromYawDeg(-n1.yawOffsetDeg), q1_rel);
+
+  // // Mount correction (identity unless you edit nX.q_mount)
+  // Quat q0_body = qMul(q0_rel, n0.q_mount);
+  // Quat q1_body = qMul(q1_rel, n1.q_mount);
+
+  // --- build derived states for all nodes ---
+  // Quat q_body[NUM_NODES];   // array to hold each node’s calibrated orientation
+  // float yaw_body_deg[NUM_NODES];
+
+  // for (uint8_t i = 0; i < NUM_NODES; ++i) {
+  //   q_body[i] = node[i].qBody();   // automatically applies heading + mount
+  //   yaw_body_deg[i] = yawDeg(q_body[i]);  // optional, human-friendly
+  // }
+
+  // for (uint8_t i = 0; i < NUM_NODES; ++i) {
+  //   Serial.print(q_body[i].r,4); Serial.print(',');
+  //   Serial.print(q_body[i].i,4); Serial.print(',');
+  //   Serial.print(q_body[i].j,4); Serial.print(',');
+  //   Serial.print(q_body[i].k,4); Serial.print(',');
+  //   Serial.print(yaw_body_deg[i],2);
+  //   Serial.print(i < NUM_NODES-1 ? ',' : ',');
+  // }
+
+  // yaw alignment for display/feature (only when offset available)
+  // float y0 = yawDeg(q0_body);
+  // float y1 = yawDeg(q1_body);
+  // if (node0.haveYawOffset) y0 -= node0.yawOffsetDeg;
+  // if (node1.haveYawOffset) y1 -= node1.yawOffsetDeg;
+
+  // touch
   uint16_t touchA = cap1.touched();
   uint16_t touchB = cap2.touched();
 
-  // --- Pretty, labeled one-liner (easy to eyeball). Comment out if you want only CSV.
+  // --- CSV frame (stable schema; expand later to q2/q3 if you want) ---
+  Serial.print(now); Serial.print(',');
 
-  Quat q0_rel = haveRef0 ? qMul(qConj(q0_ref), q0) : q0;
-  Quat q1_rel = haveRef1 ? qMul(qConj(q1_ref), q1) : q1;
+  Serial.print(ax,3); Serial.print(','); Serial.print(ay,3); Serial.print(','); Serial.print(az,3); Serial.print(',');
+  Serial.print(gx,3); Serial.print(','); Serial.print(gy,3); Serial.print(','); Serial.print(gz,3); Serial.print(',');
 
-  const float deadbangDeg = 2.0f; // choose 2-3 deg
-  Quat q0_disp = q0_rel, q1_disp = q1_rel;
+  // bno0 world and rel+heading (yaw shown for sanity)
+  Serial.print(n0.q_world.r,4); Serial.print(','); Serial.print(n0.q_world.i,4); Serial.print(',');
+  Serial.print(n0.q_world.j,4); Serial.print(','); Serial.print(n0.q_world.k,4); Serial.print(',');
+  Serial.print(q0_body.r,4);    Serial.print(','); Serial.print(q0_body.i,4);    Serial.print(',');
+  Serial.print(q0_body.j,4);    Serial.print(','); Serial.print(q0_body.k,4);    Serial.print(',');
+  Serial.print(yawDeg(q0_body),2); Serial.print(',');
 
-  if (qAngleFromIdentityDeg(q0_rel) < deadbangDeg) { q0_disp = Quat(0,0,0,1); }
-  if (qAngleFromIdentityDeg(q1_rel) < deadbangDeg) { q1_disp = Quat(0,0,0,1); }
+  // bno1 world and rel+heading
+  Serial.print(n1.q_world.r,4); Serial.print(','); Serial.print(n1.q_world.i,4); Serial.print(',');
+  Serial.print(n1.q_world.j,4); Serial.print(','); Serial.print(n1.q_world.k,4); Serial.print(',');
+  Serial.print(q1_body.r,4);    Serial.print(','); Serial.print(q1_body.i,4);    Serial.print(',');
+  Serial.print(q1_body.j,4);    Serial.print(','); Serial.print(q1_body.k,4);    Serial.print(',');
+  Serial.print(yawDeg(q1_body),2); Serial.print(',');
 
-  // convert these to Euler for display:
-  float r0,p0,y0, r1,p1,y1;
-  // quatToEuler(q0_rel.i, q0_rel.j, q0_rel.k, q0_rel.r, r0,p0,y0);
-  // quatToEuler(q1_rel.i, q1_rel.j, q1_rel.k, q1_rel.r, r1,p1,y1);
-  
-  quatToEuler(q0_disp.i, q0_disp.j, q0_disp.k, q0_disp.r, r0,p0,y0);
-  quatToEuler(q1_disp.i, q1_disp.j, q1_disp.k, q1_disp.r, r1,p1,y1);
+  Serial.print(touchA); Serial.print(','); Serial.println(touchB);
 
-  // Serial.print("t="); Serial.print(now);
-  // Serial.print(" | IMU(acc)[m/s^2]: ");
-  // Serial.print(ax,2); Serial.print(","); Serial.print(ay,2); Serial.print(","); Serial.print(az,2);
-  // Serial.print(" | Gyro(x,y,z): ");
-  // Serial.print(gx,2); Serial.print(","); Serial.print(gy,2); Serial.print(","); Serial.print(gz,2);
-  // Serial.print(" | BNO0 quat(i,j,k,w): ");
-  // Serial.print(q0.i,3); Serial.print(","); Serial.print(q0.j,3); Serial.print(","); Serial.print(q0.k,3); Serial.print(","); Serial.print(q0.r,3);
-  Serial.print(" | BNO0 r/p/y[deg]: ");
-  Serial.print(r0,1); Serial.print(","); Serial.print(p0,1); Serial.print(","); Serial.print(y0,1);
-  // Serial.print(" | BNO1 quat(i,j,k,w): ");
-  // Serial.print(q1.i,3); Serial.print(","); Serial.print(q1.j,3); Serial.print(","); Serial.print(q1.k,3); Serial.print(","); Serial.print(q1.r,3);
-  Serial.print(" | BNO1 r/p/y[deg]: ");
-  Serial.print(r1,1); Serial.print(","); Serial.print(p1,1); Serial.print(","); Serial.println(y1,1);
-  // Serial.print(" | touchA=0x"); Serial.print(touchA, HEX);
-  // Serial.print(" touchB=0x"); Serial.println(touchB, HEX);
-
-
-  // Emit one CSV frame
+  // ========================= CSV OUTPUT =========================
   // Serial.print(now); Serial.print(',');
+
+  // // --- Built-in LSM6 data ---
   // Serial.print(ax,3); Serial.print(','); Serial.print(ay,3); Serial.print(','); Serial.print(az,3); Serial.print(',');
   // Serial.print(gx,3); Serial.print(','); Serial.print(gy,3); Serial.print(','); Serial.print(gz,3); Serial.print(',');
 
-  // Serial.print(q0.i,4); Serial.print(','); Serial.print(q0.j,4); Serial.print(',');
-  // Serial.print(q0.k,4); Serial.print(','); Serial.print(q0.r,4); Serial.print(',');
+  // // --- BNO body orientations (final calibrated) ---
+  // for (uint8_t i=0; i<NUM_NODES; ++i) {
+  //   Quat qb = node[i].qBody();
+  //   Serial.print(qb.r,4); Serial.print(',');
+  //   Serial.print(qb.i,4); Serial.print(',');
+  //   Serial.print(qb.j,4); Serial.print(',');
+  //   Serial.print(qb.k,4);
+  //   if (i < NUM_NODES-1) Serial.print(',');
+  // }
 
-  // Serial.print(q1.i,4); Serial.print(','); Serial.print(q1.j,4); Serial.print(',');
-  // Serial.print(q1.k,4); Serial.print(','); Serial.print(q1.r,4); Serial.print(',');
+  // // --- Touch sensors ---
+  // Serial.print(',');
+  // Serial.print(cap1.touched()); Serial.print(',');
+  // Serial.println(cap2.touched());
 
-  // Serial.print(touchA); Serial.print(','); Serial.println(touchB);
+  }
 }

@@ -1,4 +1,5 @@
 #include "Quat.h"
+#include <math.h>
 
 /* Conjugate: inverse for unit quaternions */
 Quat qConj(const Quat& q){
@@ -46,21 +47,40 @@ float qAngleFromIdentityDeg(const Quat& q) {
     pitch = asin (2(r*j - k*i))         with clamp
     yaw   = atan2(2(r*k + i*j), 1 - 2(j^2 + k^2))
 */
-void quatToEuler(float qi, float qj, float qk, float qr,
-                 float &roll, float &pitch, float &yaw) {
+void quatToEuler(const Quat& q, float &roll, float &pitch, float &yaw) {
 
   // roll about X
-  float sinr_cosp = 2.0f * (qr * qi + qj * qk);
-  float cosr_cosp = 1.0f - 2.0f * (qi * qi + qj * qj);
+  float sinr_cosp = 2.0f * (q.r * q.i + q.j * q.k);
+  float cosr_cosp = 1.0f - 2.0f * (q.i * q.i + q.j * q.j);
   roll = atan2f(sinr_cosp, cosr_cosp) * 180.0f / PI;
 
   // pitch about Y
-  float sinp = 2.0f * (qr * qj - qk * qi);
+  float sinp = 2.0f * (q.r * q.j - q.k * q.i);
   if (fabsf(sinp) >= 1.0f) pitch = copysignf(90.0f, sinp);  // clamp
   else                     pitch = asinf(sinp) * 180.0f / PI;
 
   // yaw about Z
-  float siny_cosp = 2.0f * (qr * qk + qi * qj);
-  float cosy_cosp = 1.0f - 2.0f * (qj * qj + qk * qk);
+  float siny_cosp = 2.0f * (q.r * q.k + q.i * q.j);
+  float cosy_cosp = 1.0f - 2.0f * (q.j * q.j + q.k * q.k);
   yaw = atan2f(siny_cosp, cosy_cosp) * 180.0f / PI;
+}
+
+float yawDeg(const Quat& q) {
+  float siny_cosp = 2.0f * (q.r * q.k + q.i * q.j);
+  float cosy_cosp = 1.0f - 2.0f * (q.j * q.j + q.k * q.k);
+  return atan2f(siny_cosp, cosy_cosp) * 180.0f / PI;
+}
+
+Quat quatFromYawDeg(float yaw){
+  float half = (yaw * PI / 180.0f) * 0.5f;
+  float s = sinf(half), c = cosf(half);
+  // rotation about +Z: axis (0,0,1) → (i,j,k,r) = (0,0,s,c)
+  return Quat(0.0f, 0.0f, s, c);
+}
+
+Vec3 rotateVecByQuat(const Vec3& v, const Quat& q){
+  // v' = q ∘ (0,v) ∘ q*
+  Quat vq(v.x, v.y, v.z, 0.0f);
+  Quat r  = qMul(qMul(q, vq), qConj(q));
+  return { r.i, r.j, r.k };
 }
