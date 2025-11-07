@@ -70,77 +70,89 @@ static void calibrateGyroBias() {
 }
 
 // example for 2 nodes; extend by pattern
-static void printHeader() {
-  // Serial.println(
-  //   "t_ms,"
-  //   "ax,ay,az,gx,gy,gz,"
-  //   "bno0_qr,qi,qj,qk,"
-  //   "bno1_qr,qi,qj,qk,"
-  //   // "bno2_qr,qi,qj,qk,"
-  //   // "bno3_qr,qi,qj,qk,"
-  //   "touchA,touchB"
-  // );
+// static void printHeader() {
 
-  // Serial.println(
-  // "t_ms,ax,ay,az,gx,gy,gz,"
-  // "n0_w,n0_i,n0_j,n0_k,n0_yaw,"
-  // "n1_w,n1_i,n1_j,n1_k,n1_yaw,"
-  // "touchA,touchB"
-  // );
+//   // Serial.println(
+//   // "t_ms,ax,ay,az,gx,gy,gz,"
+//   // "n0_w,n0_i,n0_j,n0_k,n0_yaw,"
+//   // "n1_w,n1_i,n1_j,n1_k,n1_yaw,"
+//   // "touchA,touchB"
+//   // );
 
-  Serial.println(
-    "t_ms,"
-    "ax,ay,az,gx,gy,gz,"
-    "n0_world_w,n0_world_i,n0_world_j,n0_world_k,"
-    "n0_body_w,n0_body_i,n0_body_j,n0_body_k,n0_yaw_deg,"
-    "n1_world_w,n1_world_i,n1_world_j,n1_world_k,"
-    "n1_body_w,n1_body_i,n1_body_j,n1_body_k,n1_yaw_deg,"
-    "touchA,touchB"
-  );
+//   Serial.println(
+//     "t_ms,"
+//     "ax,ay,az,gx,gy,gz,"
+//     "n0_world_w,n0_world_i,n0_world_j,n0_world_k,"
+//     "n0_body_w,n0_body_i,n0_body_j,n0_body_k,n0_yaw_deg,"
+//     "n1_world_w,n1_world_i,n1_world_j,n1_world_k,"
+//     "n1_body_w,n1_body_i,n1_body_j,n1_body_k,n1_yaw_deg,"
+//     "touchA,touchB"
+//   );
 
+// }
+
+// ---------- pretty print controls ----------
+#define HUMAN_READABLE_BODY_ONLY 1   // 1 = labeled line; 0 = CSV
+
+// Labeled header printed once
+static void printBodyReadableHeader(uint8_t num) {
+  Serial.print("Fields: t_ms");
+  for (uint8_t i=0; i<num; ++i) {
+    Serial.print(" | n"); Serial.print(i); Serial.print("_body (w,i,j,k), yaw_deg");
+  }
+  Serial.println(" | touchA, touchB");
 }
 
-// Minimal I2C scanner with TCA channels
-void scanI2C() {
-  Serial.println("\n--- Base bus scan (no TCA channel selected) ---");
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      Serial.print("  found 0x"); Serial.println(addr, HEX);
-    }
+// Labeled line: body quats + yaw for all nodes
+static void printBodyReadableLine(uint32_t now,
+                                  BnoNode* nodes, uint8_t num,
+                                  uint16_t touchA, uint16_t touchB) {
+  Serial.print("t="); Serial.print(now);
+  for (uint8_t i=0; i<num; ++i) {
+    Quat qb = nodes[i].qBody();
+    float y  = yawDeg(qb);
+    Serial.print(" | n"); Serial.print(i);
+    Serial.print("_body=(");
+    Serial.print(qb.r,4); Serial.print(',');
+    Serial.print(qb.i,4); Serial.print(',');
+    Serial.print(qb.j,4); Serial.print(',');
+    Serial.print(qb.k,4); Serial.print("), yaw=");
+    Serial.print(y,2);
   }
-
-  // Known TCA address(es) to try:
-  const uint8_t tcaCandidates[] = {0x70, 0x71, 0x72, 0x73};
-  for (uint8_t ti=0; ti<sizeof(tcaCandidates); ++ti) {
-    uint8_t tca = tcaCandidates[ti];
-    Serial.print("\nTrying TCA at 0x"); Serial.println(tca, HEX);
-
-    // Ping TCA itself
-    Wire.beginTransmission(tca);
-    int ping = Wire.endTransmission();
-    if (ping != 0) { Serial.println("  not present"); continue; }
-
-    for (uint8_t ch=0; ch<8; ++ch) {
-      // select channel
-      Wire.beginTransmission(tca);
-      Wire.write(1 << ch);
-      Wire.endTransmission();
-      delay(3);
-
-      Serial.print("  CH"); Serial.print(ch); Serial.println(" scan:");
-      bool any=false;
-      for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-          Serial.print("    found 0x"); Serial.println(addr, HEX);
-          any=true;
-        }
-      }
-      if (!any) Serial.println("    (no devices)");
-    }
-  }
+  Serial.print(" | touchA=0x"); Serial.print(touchA, HEX);
+  Serial.print(" touchB=0x");   Serial.println(touchB, HEX);
 }
+
+// CSV header if you ever flip HUMAN_READABLE_BODY_ONLY to 0
+static void printBodyCsvHeader(uint8_t num) {
+  Serial.print("t_ms,");
+  for (uint8_t i=0; i<num; ++i) {
+    Serial.print("n"); Serial.print(i); Serial.print("_bw,");
+    Serial.print("n"); Serial.print(i); Serial.print("_bi,");
+    Serial.print("n"); Serial.print(i); Serial.print("_bj,");
+    Serial.print("n"); Serial.print(i); Serial.print("_bk,");
+    Serial.print("n"); Serial.print(i); Serial.print("_yaw");
+    if (i < num-1) Serial.print(",");
+  }
+  Serial.println(",touchA,touchB");
+}
+
+static void printBodyCsvLine(uint32_t now, BnoNode* nodes, uint8_t num,
+                             uint16_t touchA, uint16_t touchB) {
+  Serial.print(now); Serial.print(',');
+  for (uint8_t i=0; i<num; ++i) {
+    Quat qb = nodes[i].qBody();
+    Serial.print(qb.r,4); Serial.print(',');
+    Serial.print(qb.i,4); Serial.print(',');
+    Serial.print(qb.j,4); Serial.print(',');
+    Serial.print(qb.k,4); Serial.print(',');
+    Serial.print(yawDeg(qb),2);
+    if (i < num-1) Serial.print(',');
+  }
+  Serial.print(','); Serial.print(touchA);
+  Serial.print(','); Serial.println(touchB);
+}
+
 
 void setup() {
   Serial.begin(115200);
@@ -149,9 +161,6 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000);
   delay(50);
-  // scanI2C();
-  // while(true) { delay(1000); } // stop here for now
-
 
   // LSM6
   if (!lsm6.begin_I2C(LSM6_ADDR, &Wire)) {
@@ -177,7 +186,12 @@ void setup() {
   if (!cap1.begin(MPR1_ADDR)) { Serial.println("ERR: MPR121 #1 not found"); while(1) delay(10); }
   if (!cap2.begin(MPR2_ADDR)) { Serial.println("ERR: MPR121 #2 not found"); while(1) delay(10); }
 
-  printHeader();
+  // printHeader();
+  // #if HUMAN_READABLE_BODY_ONLY
+  printBodyReadableHeader(NUM_NODES);
+  // #else
+  //   printBodyCsvHeader(NUM_NODES);
+  // #endif
 
 }
 
@@ -229,7 +243,7 @@ void loop() {
   BnoNode& n0 = node[0];
   BnoNode& n1 = node[1];
 
-  // Optional all encompassing step 
+  // All encompassing step 
   Quat q0_body = n0.qBody();
   Quat q1_body = n1.qBody();
 
@@ -265,36 +279,16 @@ void loop() {
   //   Serial.print(i < NUM_NODES-1 ? ',' : ',');
   // }
 
-  // yaw alignment for display/feature (only when offset available)
-  // float y0 = yawDeg(q0_body);
-  // float y1 = yawDeg(q1_body);
-  // if (node0.haveYawOffset) y0 -= node0.yawOffsetDeg;
-  // if (node1.haveYawOffset) y1 -= node1.yawOffsetDeg;
-
   // touch
   uint16_t touchA = cap1.touched();
   uint16_t touchB = cap2.touched();
 
   // --- CSV frame (stable schema; expand later to q2/q3 if you want) ---
-  Serial.print(now); Serial.print(',');
-  Serial.print(ax,3); Serial.print(','); Serial.print(ay,3); Serial.print(','); Serial.print(az,3); Serial.print(',');
-  Serial.print(gx,3); Serial.print(','); Serial.print(gy,3); Serial.print(','); Serial.print(gz,3); Serial.print(',');
-
-  // n0 world, body, yaw
-  Serial.print(n0.q_world.r,4); Serial.print(','); Serial.print(n0.q_world.i,4); Serial.print(',');
-  Serial.print(n0.q_world.j,4); Serial.print(','); Serial.print(n0.q_world.k,4); Serial.print(',');
-  Serial.print(q0_body.r,4);    Serial.print(','); Serial.print(q0_body.i,4);    Serial.print(',');
-  Serial.print(q0_body.j,4);    Serial.print(','); Serial.print(q0_body.k,4);    Serial.print(',');
-  Serial.print(yawDeg(q0_body),2); Serial.print(',');
-
-  // n1 world, body, yaw
-  Serial.print(n1.q_world.r,4); Serial.print(','); Serial.print(n1.q_world.i,4); Serial.print(',');
-  Serial.print(n1.q_world.j,4); Serial.print(','); Serial.print(n1.q_world.k,4); Serial.print(',');
-  Serial.print(q1_body.r,4);    Serial.print(','); Serial.print(q1_body.i,4);    Serial.print(',');
-  Serial.print(q1_body.j,4);    Serial.print(','); Serial.print(q1_body.k,4);    Serial.print(',');
-  Serial.print(yawDeg(q1_body),2); Serial.print(',');
-
-  Serial.print(touchA); Serial.print(','); Serial.println(touchB);
+  // #if HUMAN_READABLE_BODY_ONLY
+  printBodyReadableLine(now, node, NUM_NODES, touchA, touchB);
+  // #else
+  //   printBodyCsvLine(now, node, NUM_NODES, touchA, touchB);
+  // #endif
 
   // ========================= CSV OUTPUT =========================
   // Serial.print(now); Serial.print(',');
