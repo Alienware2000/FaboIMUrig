@@ -14,10 +14,13 @@
 #include <Wire.h>
 
 #include "Quat.h"
+#include "Joint.h"
 #include "BnoNode.h"
 
 #include <Adafruit_LSM6DSL.h>
 #include "Adafruit_MPR121.h"
+
+JointAngleMode gMode = JointAngleMode::BoneVector;
 
 // ---------- addresses ----------
 #define TCA_ADDR   0x70
@@ -235,17 +238,28 @@ void loop() {
 
     if (c == 'g') { setAllFusion(FusionMode::GameRV);  Serial.println("Mode: GameRV"); }
     if (c == 'r') { setAllFusion(FusionMode::RotationRV); Serial.println("Mode: RotationRV"); }
+
+    if (c == '1') { gMode = JointAngleMode::BoneVector;    Serial.println("Joint mode: BoneVector"); }
+    if (c == '2') { gMode = JointAngleMode::QuaternionDiff; Serial.println("Joint mode: QuaternionDiff"); }
   }
+
+  Quat qUpper = node[0].qBody();
+  Quat qFore  = node[1].qBody();
+
+  float thetaBone = jointAngleBoneVector(qUpper, qFore);
+  Serial.print("joint[bone] = ");
+  Serial.print(180 - thetaBone, 1);
+  Serial.println(" deg");
 
   // --- build derived states ---
 
   // Example: use the first two nodes in the CSV for now
-  BnoNode& n0 = node[0];
-  BnoNode& n1 = node[1];
+  // BnoNode& n0 = node[0];
+  // BnoNode& n1 = node[1];
 
-  // All encompassing step 
-  Quat q0_body = n0.qBody();
-  Quat q1_body = n1.qBody();
+  // // All encompassing step 
+  // Quat q0_body = n0.qBody();
+  // Quat q1_body = n1.qBody();
 
   // Relative since zero
   // Quat q0_rel = n0.qRel();
@@ -280,12 +294,12 @@ void loop() {
   // }
 
   // touch
-  uint16_t touchA = cap1.touched();
-  uint16_t touchB = cap2.touched();
+  // uint16_t touchA = cap1.touched();
+  // uint16_t touchB = cap2.touched();
 
   // --- CSV frame (stable schema; expand later to q2/q3 if you want) ---
   // #if HUMAN_READABLE_BODY_ONLY
-  printBodyReadableLine(now, node, NUM_NODES, touchA, touchB);
+  // printBodyReadableLine(now, node, NUM_NODES, touchA, touchB);
   // #else
   //   printBodyCsvLine(now, node, NUM_NODES, touchA, touchB);
   // #endif
