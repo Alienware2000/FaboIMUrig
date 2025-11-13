@@ -1,22 +1,29 @@
-# FaboIMUrig — Baseline v0.4
+# FaboIMUrig — Baseline v0.5
 
 Firmware for a **multi-sensor wearable calibration rig** forming the sensing backbone of the Faboratory’s **Upper-Body Soft Exosuit Project** at Yale University.
 
-This version introduces a **scalable node-based architecture** for multi-IMU calibration, including modular quaternion handling, reference-pose calibration, heading alignment for GameRV mode, and preliminary data-streaming for machine learning.
+This version adds the first implementation of **joint-angle estimation** between IMU pairs, using both the **Bone-Vector** and **Quaternion-Difference** methods.
+
+It builds on the modular node-based sensor architecture introduced in v0.4 and prepares the firmware for **real-time biomechanical interpretation** of upper-limb motion.
 
 ---
 
 ## 🧠 Project Context
 
-The Faboratory’s wearable robotics project aims to develop an **intelligent upper-body soft exosuit** capable of detecting human motion and responding with assistive actuation.
+The Faboratory’s soft exosuit project aims to create an **intelligent wearable system** capable of detecting human motion, interpreting user intent, and responding with soft robotic actuation.
 
 The system integrates:
-- **Soft actuators**
-- **Inertial Measurement Units (IMUs)**
-- **Capacitive touch sensors**
+- **BNO085 IMUs** for 3D orientation
+- **LSM6DSL IMU** on the Feather for reference sensing
+- **MPR121 capacitive touch sensors**
+- **Soft extension actuators**
 
-Together, these subsystems enable the exosuit to perceive **posture**, **muscle activity**, and **joint motion** in real time.  
-This firmware serves as the foundation for **motion capture, calibration, and dataset collection** toward future perception and control models.
+This firmware acts as the **calibration, synchronization, and data-streaming layer** for:
+- Motion capture  
+- Joint-angle estimation  
+- Touch-motion dataset generation  
+- ML-based intention modeling  
+- Future closed-loop assistive control  
 
 ---
 
@@ -54,7 +61,8 @@ This firmware serves as the foundation for **motion capture, calibration, and da
 ✅ **Data acquisition & streaming**
 - Unified CSV logging of:
   - Built-in LSM6 acceleration + gyro  
-  - Calibrated quaternions for each IMU node (`q_body`)  
+  - Calibrated quaternions for each IMU node (`q_body`)
+  - Joint-angle measurements (bone & quat methods)  
   - Optional yaw and motion magnitude per node  
   - Touch sensor masks (A/B)  
 - Streaming frequency: ~50 Hz
@@ -62,23 +70,33 @@ This firmware serves as the foundation for **motion capture, calibration, and da
 ✅ **Serial command interface**
 
 | Key | Function |
-|-----|-----------|
-| `z` | Capture averaged zero pose for all IMUs (reference pose) |
-| `g` | Switch all IMUs to Game Rotation Vector mode (gyro + accel only) |
-| `r` | Switch all IMUs to Rotation Vector mode (gyro + accel + mag) |
+|-----|----------|
+| `z` | Capture reference pose (averaged) |
+| `g` | Switch to GameRV mode |
+| `r` | Switch to RotationVector mode |
+| `1` | Select Bone-Vector joint-angle mode |
+| `2` | Select Quaternion-Diff joint-angle mode |
 
 ---
 
-## 🧪 System Operation
+## 🧭 System Operation
 
 On startup, the firmware:
-1. Initializes all I²C devices and selects each TCA9548A channel sequentially.  
-2. Performs **gyro bias calibration** on the Feather’s built-in LSM6DSL IMU.  
-3. Brings up all BNO085 nodes in the specified fusion mode.  
-4. Captures continuous quaternion updates at ~100 Hz per node, aggregated and streamed at 50 Hz.  
-5. Logs IMU quaternions, built-in IMU readings, and capacitive touch data in synchronized CSV format.  
+1. Initializes multiplexer and all IMU nodes  
+2. Performs LSM6 gyro bias calibration  
+3. Selects fusion mode (default: GameRV)  
+4. Streams synchronized IMU + touch data at 50 Hz  
+5. Computes joint angles between specified IMU pairs  
 
-Press `'z'` to define a neutral **reference pose**; this captures and averages the quaternions for each IMU, enabling consistent motion tracking relative to that baseline.
+Press `'z'` while arm is in a neutral pose to capture:
+- per-node `q_ref`  
+- yaw alignment offsets (GameRV)  
+
+### Joint-angle measurement  
+Occurs **after**:
+- reference-pose correction  
+- heading synchronization  
+- mount-alignment (when available)  
 
 ---
 
@@ -136,13 +154,12 @@ This version implements a **modular calibration pipeline**. Each step refines th
 ## 🧾 Version History
 
 | Version | Key Features | Date |
-|----------|---------------|------|
-| **v0.4 (Current)** | Multi-node `BnoNode` system, heading alignment for GameRV, modular quaternion math, CSV data logging for ML | Nov 2025 |
-| **v0.3** | Dual-IMU + touch integration, LSM6 bias calibration, zero-pose averaging, stable quaternion streaming | Oct 2025 |
-| **v0.2** | Initial IMU bring-up through TCA9548A multiplexer, first stable sensor readout | Sept 2025 |
-| **v0.1 (Prototype)** | Single BNO085 + LSM6 proof of concept for sensor communication | Aug 2025 |
-
-> Future versions (v0.5+) will introduce guided mount alignment, real-time visualization, and early dataset collection pipelines.
+|--------|--------------|------|
+| **v0.5-pre (Current)** | Joint-angle estimation (BoneVector & QuaternionDiff), updated data pipeline | Dec 2025 |
+| **v0.4** | Node-based IMU architecture, heading alignment, modular quaternion math | Nov 2025 |
+| **v0.3** | Dual IMU + touch, zero-pose averaging, stable quaternions | Oct 2025 |
+| **v0.2** | First TCA9548A multi-IMU bring-up | Sept 2025 |
+| **v0.1** | Single-node IMU prototype | Aug 2025 |
 
 ---
 
